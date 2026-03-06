@@ -6,26 +6,32 @@ import difflib
 import json
 import os
 from pathlib import Path
-from typing import Any
 
 import click
 
+from replace_text.core import (
+    Config,
+    FileOperator,
+    LocalFileOperator,
+)
 
-def load_config(config_path: Path) -> dict[str, Any]:
+
+def load_config(config_path: Path, file_operator: FileOperator) -> Config:
     """Load and validate the configuration file.
 
     Args:
         config_path: Path to the JSON config file.
+        file_operator: File operator for reading files.
 
     Returns:
-        Parsed configuration dictionary.
+        Parsed configuration object.
 
     Raises:
         SystemExit: If config file is invalid or missing required fields.
     """
     try:
-        with open(config_path, encoding="utf-8") as f:
-            cfg = json.load(f)
+        content = file_operator.read_text(config_path)
+        cfg_dict = json.loads(content)
     except json.JSONDecodeError as e:
         click.echo(f"Error: Invalid JSON in config file: {e}", err=True)
         raise SystemExit(1)
@@ -33,11 +39,19 @@ def load_config(config_path: Path) -> dict[str, Any]:
         click.echo(f"Error: Could not read config file: {e}", err=True)
         raise SystemExit(1)
 
-    if not isinstance(cfg.get("dictionaries"), dict):
+    if not isinstance(cfg_dict.get("dictionaries"), dict):
         click.echo("Error: Config must contain a 'dictionaries' object", err=True)
         raise SystemExit(1)
 
-    return cfg
+    version = cfg_dict.get("version", "1.0")
+
+    return Config(
+        dictionaries=cfg_dict["dictionaries"],
+        ignore_extensions=cfg_dict.get("ignore_extensions", []),
+        ignore_directories=cfg_dict.get("ignore_directories", []),
+        ignore_file_prefixes=cfg_dict.get("ignore_file_prefixes", []),
+        version=version,
+    )
 
 
 def get_replacement_dict(
@@ -210,6 +224,12 @@ def process_file(
     help="Dictionary name from config (auto-selects if only one)",
 )
 @click.option(
+    "--backup-dir",
+    "-b",
+    type=click.Path(file_okay=False, dir_okay=True),
+    help="Directory to store backups before writing files",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show what would be replaced without making changes",
@@ -220,6 +240,7 @@ def replace_text(
     folder: str,
     dict_name: str | None,
     dry_run: bool,
+    backup_dir: str,
 ) -> None:
     """Replace text in files based on dictionary mappings.
 
@@ -229,12 +250,13 @@ def replace_text(
     config_path = Path(config)
     folder_path = Path(folder)
 
-    cfg = load_config(config_path)
+    file_operator = LocalFileOperator()
+    cfg = load_config(config_path, file_operator)
 
-    dictionaries = cfg.get("dictionaries", {})
-    ignore_extensions = cfg.get("ignore_extensions", [])
-    ignore_directories = cfg.get("ignore_directories", [])
-    ignore_file_prefixes = cfg.get("ignore_file_prefixes", [])
+    dictionaries = getattr(cfg, "dictionaries", {})
+    ignore_extensions = getattr(cfg, "ignore_extensions", [])
+    ignore_directories = getattr(cfg, "ignore_directories", [])
+    ignore_file_prefixes = getattr(cfg, "ignore_file_prefixes", [])
 
     dict_name, replacement_dict = get_replacement_dict(dictionaries, dict_name, direction)
 

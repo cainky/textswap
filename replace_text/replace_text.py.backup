@@ -1,0 +1,260 @@
+"""Replace text in files based on dictionary mappings."""
+
+from __future__ import annotations
+
+import difflib
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+import click
+
+from replace_text.core import (
+    Config,
+    FileOperator,
+    LocalFileOperator,
+    ReplacementDictionary,
+    ReplacementRule,
+    TextReplacer,
+    get_cloud_storage,
+)
+
+
+def load_config(config_path: Path, file_operator: FileOperator) -> Config:
+    """Load and validate the configuration file."""
+    try:
+        content = file_operator.read_text(config_path)
+        cfg_dict = json.loads(content)
+    except json.JSONDecodeError as e:
+        click.echo(f"Error: Invalid JSON in config file: {e}", err=True)
+        raise SystemExit(1)
+    except OSError as e:
+        click.echo(f"Error: Could not read config file: {e}", err=True)
+        raise SystemExit(1)
+    
+    if not isinstance(cfg_dict.get("dictionaries"), dict):
+        click.echo("Error: Config must contain a 'dictionaries' object", err=True)
+        raise SystemExit(1)
+    
+    version = cfg_dict.get("version", "1.0")
+    
+    return Config(
+        dictionaries=cfg_dict["dictionaries"],
+        ignore_extensions=cfg_dict.get("ignore_extensions", []),
+        ignore_directories=cfg_dict.get("ignore_directories", []),
+        ignore_file_prefixes=cfg_dict.get("ignore_file_prefixes", []),
+        version=version,
+    )
+
+
+def get_replacement_dict(
+    dictionaries: dict[str, dict[str, str]],
+    dict_name: str | None,
+    direction: int,
+    file_operator: FileOperator,
+) -> tuple[str, ReplacementDictionary]:
+    """Get the replacement dictionary based on name and direction."""
+    if not dictionaries:
+        click.echo("Error: No dictionaries found in config", err=True)
+        raise SystemExit(1)
+    
+    if dict_name is None:
+        if len(dictionaries) == 1:
+            dict_name = next(iter(dictionaries))
+            click.echo(f"Using dictionary: {dict_name}")
+        else:
+            dict_name = click.prompt(
+                "Dictionary name", type=click.Choice(list(dictionaries.keys()))
+            )
+    
+    if dict_name not in dictionaries:
+        click.echo(f"Error: Dictionary '{dict_name}' not found", err=True)
+        raise SystemExit(1)
+    
+    replacement_dict = ReplacementDictionary(
+        name=dict_name,
+        mapping=dictionaries[dict_name],
+    )
+    
+    if direction == 2:
+        replacement_dict = replacement_dict.reverse()
+    
+    return dict_name, replacement_dict
+
+
+def should_skip_file(
+    file_path: Path,
+    ignore_extensions: list[str],
+    ignore_file_prefixes: list[str],
+) -> bool:
+    """Check if a file should be skipped based on ignore rules."""
+    filename = file_path.name
+    
+    if any(filename.endswith(ext) for ext in ignore_extensions):
+        return True
+    
+    if any(filename.startswith(prefix) for prefix in ignore_file_prefixes):
+        return True
+    
+    return False
+
+
+def generate_diff(file_path: Path, old_content: str, new_content: str) -> str:
+    """Generate a unified diff between old and new content."""
+    old_lines = old_content.splitlines(keepends=True)
+    new_lines = new_content.splitlines(keepends=True)
+    
+    diff = difflib.unified_diff(
+        old_lines,
+        new_lines,
+        fromfile=f"a/{file_path}",
+        tofile=f"b/{file_path}",
+        lineterm="",
+    )
+    return "".join(diff)
+
+
+def process_file(
+    file_path: Path,
+    replacement_dict: ReplacementDictionary,
+    dry_run: bool,
+    file_operator: FileOperator,
+    verbose: bool = False,
+) -> tuple[bool, str | None]:
+    """Process a single file and apply replacements."""
+    try:
+        content = file_operator.read_text(file_path)
+    except (ValueError, PermissionError, OSError) as e:
+        error_msg = f"Skipped: {e}"
+        if verbose:
+            click.echo(f"[VERBOSE] {error_msg}", err=True)
+        return False, error_msg
+    
+    if file_operator.is_binary(file_path):
+        error_msg = f"Skipped (binary file): {file_path}"
+        if verbose:
+            click.echo(f"[VERBOSE] {error_msg}", err=True)
+        return False, error_msg
+    
+    rules = [
+        ReplacementRule(pattern=key, replacement=value, use_regex=False)
+        for key, value in replacement_dict.mapping.items()
+    ]
+    
+    new_content = TextReplacer.replace(content, rules)
+    
+    if new_content != content:
+        if dry_run:
+            click.echo(f"\nWould modify: {file_path}")
+            diff = generate_diff(file_path, content, new_content)
+            if diff:
+                click.echo(click.style(diff, fg="yellow"))
+        else:
+            try:
+                file_operator.write_text(file_path, new_content)
+                click.echo(f"Modified: {file_path}")
+            except (PermissionError, OSError) as e:
+                error_msg = f"Skipped (write error): {file_path} - {e}"
+                if verbose:
+                    click.echo(f"[VERBOSE] {error_msg}", err=True)
+                return False, error_msg
+        return True, None
+    
+    if verbose:
+        click.echo(f"[VERBOSE] No changes in: {file_path}", err=True)
+    
+    return False, None
+
+
+def process_incremental(
+    file_path: Path,
+    replacement_dict: ReplacementDictionary,
+    dry_run: bool,
+    file_operator: FileOperator,
+    verbose: bool = False,
+) -> tuple[bool, str | None]:
+    """Process a file incrementally (process only if content has changed)."""
+    try:
+        content = file_operator.read_text(file_path)
+    except (ValueError, PermissionError, OSError) as e:
+        error_msg = f"Skipped: {e}"
+        if verbose:
+            click.echo(f"[VERBOSE] {error_msg}", err=True)
+        return False, error_msg
+    
+    rules = [
+        ReplacementRule(pattern=key, replacement=value, use_regex=False)
+        for key, value in replacement_dict.mapping.items()
+    ]
+    
+    new_content = TextReplacer.replace(content, rules)
+    
+    if new_content != content:
+        import hashlib
+        old_hash = hashlib.md5(content.encode()).hexdigest()
+        new_hash = hashlib.md5(new_content.encode()).hexdigest()
+        
+        if old_hash == new_hash:
+            if verbose:
+                click.echo(f"[VERBOSE] Already processed (no change): {file_path}", err=True)
+            return False, None
+        
+        if dry_run:
+            click.echo(f"\nWould modify (incremental): {file_path}")
+            diff = generate_diff(file_path, content, new_content)
+            if diff:
+                click.echo(click.style(diff, fg="yellow"))
+        else:
+            try:
+                file_operator.write_text(file_path, new_content)
+                click.echo(f"Modified (incremental): {file_path}")
+            except (PermissionError, OSError) as e:
+                error_msg = f"Skipped (write error): {file_path} - {e}"
+                if verbose:
+                    click.echo(f"[VERBOSE] {error_msg}", err=True)
+                return False, error_msg
+        return True, None
+    
+    if verbose:
+        click.echo(f"[VERBOSE] No changes in: {file_path}", err=True)
+    
+    return False, None
+
+
+def generate_config(
+    output_path: Path,
+    dictionary_name: str,
+    mappings: dict[str, str],
+    file_operator: FileOperator,
+) -> None:
+    """Generate a configuration file."""
+    config = {
+        "version": "1.0",
+        "dictionaries": {
+            dictionary_name: mappings
+        },
+        "ignore_extensions": [],
+        "ignore_directories": [],
+        "ignore_file_prefixes": [],
+    }
+    
+    file_operator.write_text(output_path, json.dumps(config, indent=2))
+    click.echo(f"Configuration generated: {output_path}")
+
+
+@click.group()
+def cli():
+    """Text replacement CLI with layered architecture."""
+    pass
+
+
+@cli.command(name="replace")
+@click.option(
+    "--config", "-c", type=click.Path(exists=True), default="config.json",
+    help="Path to config file (default: config.json in current directory)",
+)
+@click.option(
+    "--direction", "-d", type=click.IntRange(1, 2),
+    prompt="Direction (1 for keys-to-values, 2 for values-to-keys)",
+    help="1 for keys-to-values, 2 for values

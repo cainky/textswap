@@ -1,0 +1,130 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: "v0.12.2"
+    hooks:
+      - id: ruff-check
+        args: ["--fix"]
+      - id: ruff-format
+      - id: pyupgrade
+        args: ["--py39-plus"]
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: check-ast
+      - id: check-toml
+      - id: check-json
+      - id: check-vcs-permanent-fixer
+      - id: check-xml
+      - id: mixed-line-ending
+        args: ["fix=lf"]
+
+  - repo: https://github.com/pre-commit/mirrors-pytest
+    rev: "v2024.2.0"
+    hooks:
+      - id: pytest
+        args: ["--tb=short"]
+        pass_filenames: false
+
+  - repo: https://github.com/pycabook/blacken-docs
+    rev: "v1.16.0"
+    hooks:
+      - id: blacken-docs
+
+  - repo: local
+    hooks:
+      - id: type-check
+        name: Type check with mypy
+        entry: mypy
+        language: system
+        files: \.py$
+        pass_filenames: true
+        require_serial: true
+        verbose: true
+
+      - id: security-check
+        name: Security check with bandit
+        entry: bandit
+        language: system
+        files: \.py$
+        pass_filenames: true
+        verbose: true
+
+      - id: dependency-check
+        name: Dependency check with pip-audit
+        entry: pip-audit
+        language: system
+        files: pyproject.toml
+        pass_filenames: false
+        verbose: true
+
+      - id: license-check
+        name: License header check
+        entry: bash -c 'grep -q "License" "$1" || exit 1' _
+        language: system
+        files: \.(py|md)$
+        pass_filenames: true
+        verbose: true
+
+      - id: docstring-check
+        name: Docstring check with pydocstyle
+        entry: pydocstyle
+        language: system
+        files: \.py$
+        pass_filenames: true
+        verbose: true
+
+      - id: import-order
+        name: Import order check
+        entry: isort
+        language: system
+        files: \.py$
+        pass_filenames: true
+        verbose: true
+
+      - id: complexity-check
+        name: Complexity check with radon
+        entry: radon cc
+        language: system
+        files: \.py$
+        pass_filenames: true
+        verbose: true
+        args: ["-s", "A", "-a", "-nc"]
+
+      - id: coverage-check
+        name: Coverage check
+        entry: bash -c 'coverage run -m pytest && coverage report --fail-under=80'
+        language: system
+        files: \.py$
+        pass_filenames: false
+        verbose: true
+
+      - id: lint-before-test
+        name: Lint before running tests
+        entry: bash -c 'ruff check . && ruff format --check .'
+        language: system
+        files: \.py$
+        pass_filenames: false
+        verbose: true
+        always_run: true
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: "v5.0.0"
+    hooks:
+      - id: check-case-conflict
+      - id: check-symlinks
+      - id: debug-statements
+      - id: name-tests-test
+      - id: requirements-txt-fixer
+      - id: mixed-line-ending
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-json
+      - id: check-xml
+      - id: check-toml
+      - id: check-yaml
+      - id: flake8
+      - id: no-commit-to-branch
+        args: ["--branch", "main"]
