@@ -5,7 +5,12 @@
 [![PyPI version](https://badge.fury.io/py/textswap.svg)](https://badge.fury.io/py/textswap)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-Replace text across multiple files using find/replace dictionaries. Supports bidirectional replacement (keys-to-values or values-to-keys).
+Replace text across multiple files using find/replace dictionaries.
+
+- **Reversible**: apply a dictionary forward (keys-to-values) or backward (values-to-keys) — encode/decode, rename/undo
+- **Swap-safe**: all replacements happen in a single pass, so `{"foo": "bar", "bar": "foo"}` swaps cleanly and chains never cascade
+- **Whole-word mode**: `-w` keeps a key like `cat` from matching inside `category` — built for renaming identifiers
+- **Safe by default**: dry-run diffs before you commit, automatic backups with `-b`
 
 ## Installation
 
@@ -92,8 +97,8 @@ textswap -f ./src -d 2
 1. **Load config**: Reads your JSON config file containing replacement dictionaries
 2. **Walk directory**: Recursively traverses the target folder
 3. **Filter files**: Skips files matching ignore rules (extensions, prefixes, directories)
-4. **Read & replace**: For each file, reads content and applies all replacements from the dictionary
-5. **Write back**: Saves modified files (or shows diff in dry-run mode)
+4. **Read & replace**: For each file, applies every mapping in a single pass — longest key wins on overlaps, and replaced text is never re-replaced
+5. **Write back**: Backs up originals (if `--backup-dir` is set), then saves modified files (or shows diff in dry-run mode)
 
 All files are processed as UTF-8. Non-UTF-8 files are automatically skipped with a warning.
 
@@ -195,7 +200,7 @@ Direction 2 inverts the dictionary (values become keys). If two keys map to the 
 
 - **Encoding/decoding**: Obfuscate or de-obfuscate text in files
 - **Localization**: Batch replace text for different languages
-- **Refactoring**: Rename variables, functions, or classes across a codebase
+- **Refactoring**: Rename variables, functions, or classes across a codebase (use `--whole-words`)
 - **Template substitution**: Replace placeholders with actual values
 - **Migration**: Update deprecated API calls or import paths
 
