@@ -10,9 +10,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
-  issues: write
-  pull-requests: write
 
 env:
   PYTHON_VERSION: "3.x"
@@ -44,7 +41,7 @@ jobs:
         run: ruff format --check .
 
       - name: Run tests
-        run: pytest -v --cov=replace_text --cov-report=term-missing
+        run: pytest -v --cov=replace_text --cov-report=term-missing --cov-report=html
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4
