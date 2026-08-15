@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import shutil
 from pathlib import Path
 
 import click
@@ -34,6 +35,9 @@ def load_config(config_path: Path, file_operator: FileOperator) -> Config:
         cfg_dict = json.loads(content)
     except json.JSONDecodeError as e:
         click.echo(f"Error: Invalid JSON in config file: {e}", err=True)
+        raise SystemExit(1)
+    except UnicodeDecodeError:
+        click.echo(f"Error: Config file is not UTF-8 encoded: {config_path}", err=True)
         raise SystemExit(1)
     except OSError as e:
         click.echo(f"Error: Could not read config file: {e}", err=True)
@@ -151,6 +155,7 @@ def process_file(
     file_path: Path,
     replacement_dict: dict[str, str],
     dry_run: bool,
+    backup_path: Path | None = None,
 ) -> tuple[bool, str | None]:
     """Process a single file and apply replacements.
 
@@ -158,6 +163,7 @@ def process_file(
         file_path: Path to the file to process.
         replacement_dict: Dictionary of replacements to apply.
         dry_run: If True, don't modify the file.
+        backup_path: If set, copy the original file here before modifying it.
 
     Returns:
         Tuple of (was_modified, error_message).
@@ -183,6 +189,12 @@ def process_file(
             if diff:
                 click.echo(click.style(diff, fg="yellow"))
         else:
+            if backup_path is not None:
+                try:
+                    backup_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(file_path, backup_path)
+                except OSError as e:
+                    return False, f"Skipped (backup failed): {file_path} - {e}"
             try:
                 file_path.write_text(new_content, encoding="utf-8")
                 click.echo(f"Modified: {file_path}")
@@ -253,15 +265,17 @@ def replace_text(
     file_operator = LocalFileOperator()
     cfg = load_config(config_path, file_operator)
 
-    dictionaries = getattr(cfg, "dictionaries", {})
-    ignore_extensions = getattr(cfg, "ignore_extensions", [])
-    ignore_directories = getattr(cfg, "ignore_directories", [])
-    ignore_file_prefixes = getattr(cfg, "ignore_file_prefixes", [])
+    dictionaries = cfg.dictionaries
+    ignore_extensions = cfg.ignore_extensions
+    ignore_directories = cfg.ignore_directories
+    ignore_file_prefixes = cfg.ignore_file_prefixes
 
     dict_name, replacement_dict = get_replacement_dict(dictionaries, dict_name, direction)
 
     if dry_run:
         click.echo("Dry run mode - no files will be modified\n")
+
+    backup_root = Path(backup_dir).resolve() if backup_dir else None
 
     files_processed = 0
     files_modified = 0
@@ -269,8 +283,13 @@ def replace_text(
     skipped_reasons: list[str] = []
 
     for root, dirs, files in os.walk(folder_path):
-        # Filter out ignored directories
-        dirs[:] = [d for d in dirs if d not in ignore_directories]
+        # Filter out ignored directories and the backup directory itself
+        dirs[:] = [
+            d
+            for d in dirs
+            if d not in ignore_directories
+            and (backup_root is None or (Path(root) / d).resolve() != backup_root)
+        ]
 
         for filename in files:
             file_path = Path(root) / filename
@@ -278,7 +297,8 @@ def replace_text(
             if should_skip_file(file_path, ignore_extensions, ignore_file_prefixes):
                 continue
 
-            modified, error = process_file(file_path, replacement_dict, dry_run)
+            backup_path = backup_root / file_path.relative_to(folder_path) if backup_root else None
+            modified, error = process_file(file_path, replacement_dict, dry_run, backup_path)
 
             if error:
                 files_skipped += 1

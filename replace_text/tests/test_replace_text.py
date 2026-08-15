@@ -302,6 +302,25 @@ class TestErrorHandling(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Processed 0 files", result.output)
 
+    def test_non_utf8_config_exits_cleanly(self):
+        """Test that a non-UTF-8 config file produces a friendly error, not a traceback."""
+        with open(self.config_file, "wb") as f:
+            f.write(b'{"dictionaries": {"a": {"caf\xe9": "x"}}}')
+
+        result = self.runner.invoke(
+            replace_text,
+            [
+                "--config",
+                self.config_file,
+                "--direction",
+                "1",
+                "--folder",
+                self.test_folder,
+            ],
+        )
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("UTF-8", result.output)
+
     def test_non_utf8_file_skipped(self):
         """Test that non-UTF8 files are skipped with warning."""
         with open(self.config_file, "w") as f:
@@ -707,6 +726,106 @@ class TestEdgeCases(unittest.TestCase):
         with open(os.path.join(self.test_folder, "test.txt")) as f:
             content = f.read()
         self.assertEqual(content, "Hi")
+
+
+class TestBackup(unittest.TestCase):
+    """Tests for the --backup-dir option."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+        self.test_folder = "test_folder_backup"
+        self.backup_folder = "test_backup_dir"
+        self.config_file = "config_backup.json"
+
+        os.makedirs(self.test_folder, exist_ok=True)
+        with open(os.path.join(self.test_folder, "test.txt"), "w") as f:
+            f.write("Hello world")
+
+        config = {"dictionaries": {"test": {"Hello": "Goodbye"}}}
+        with open(self.config_file, "w") as f:
+            json.dump(config, f)
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self.test_folder, ignore_errors=True)
+        shutil.rmtree(self.backup_folder, ignore_errors=True)
+        if os.path.exists(self.config_file):
+            os.remove(self.config_file)
+
+    def invoke(self, *extra_args):
+        return self.runner.invoke(
+            replace_text,
+            [
+                "--config",
+                self.config_file,
+                "--direction",
+                "1",
+                "--folder",
+                self.test_folder,
+                "--dict-name",
+                "test",
+                *extra_args,
+            ],
+        )
+
+    def test_backup_dir_saves_original_content(self):
+        """Modified files are backed up with their pre-modification content."""
+        result = self.invoke("--backup-dir", self.backup_folder)
+        self.assertEqual(result.exit_code, 0)
+
+        with open(os.path.join(self.test_folder, "test.txt")) as f:
+            self.assertEqual(f.read(), "Goodbye world")
+
+        backup_path = os.path.join(self.backup_folder, "test.txt")
+        self.assertTrue(os.path.exists(backup_path), "backup file was not created")
+        with open(backup_path) as f:
+            self.assertEqual(f.read(), "Hello world")
+
+    def test_backup_preserves_subdirectory_structure(self):
+        """Same-named files in different subdirs don't clobber each other's backups."""
+        for sub in ("sub1", "sub2"):
+            os.makedirs(os.path.join(self.test_folder, sub), exist_ok=True)
+            with open(os.path.join(self.test_folder, sub, "dup.txt"), "w") as f:
+                f.write(f"Hello from {sub}")
+
+        result = self.invoke("--backup-dir", self.backup_folder)
+        self.assertEqual(result.exit_code, 0)
+
+        for sub in ("sub1", "sub2"):
+            backup_path = os.path.join(self.backup_folder, sub, "dup.txt")
+            self.assertTrue(os.path.exists(backup_path), f"missing backup for {sub}/dup.txt")
+            with open(backup_path) as f:
+                self.assertEqual(f.read(), f"Hello from {sub}")
+
+    def test_backup_skips_unmodified_files(self):
+        """Files without matches are not backed up."""
+        with open(os.path.join(self.test_folder, "nomatch.txt"), "w") as f:
+            f.write("nothing to see")
+
+        result = self.invoke("--backup-dir", self.backup_folder)
+        self.assertEqual(result.exit_code, 0)
+
+        self.assertFalse(os.path.exists(os.path.join(self.backup_folder, "nomatch.txt")))
+
+    def test_dry_run_creates_no_backups(self):
+        """--dry-run with --backup-dir writes nothing to the backup directory."""
+        result = self.invoke("--backup-dir", self.backup_folder, "--dry-run")
+        self.assertEqual(result.exit_code, 0)
+
+        self.assertFalse(os.path.exists(os.path.join(self.backup_folder, "test.txt")))
+
+    def test_backup_dir_inside_folder_not_processed(self):
+        """A backup dir nested inside the target folder is not itself processed."""
+        nested_backup = os.path.join(self.test_folder, "backups")
+
+        result = self.invoke("--backup-dir", nested_backup)
+        self.assertEqual(result.exit_code, 0)
+
+        backup_path = os.path.join(nested_backup, "test.txt")
+        self.assertTrue(os.path.exists(backup_path), "backup file was not created")
+        with open(backup_path) as f:
+            self.assertEqual(f.read(), "Hello world")
 
 
 if __name__ == "__main__":
