@@ -52,6 +52,9 @@ textswap -f ./src -d 1 --dry-run
 # Back up originals before modifying
 textswap -f ./src -d 1 -b ./backups
 
+# Only match whole words (won't touch "category" when renaming "cat")
+textswap -f ./src -d 1 -w
+
 # Reverse direction (values-to-keys)
 textswap -f ./src -d 2
 ```
@@ -65,6 +68,7 @@ textswap -f ./src -d 2
 | `--config` | `-c` | Path to config file (default: config.json) |
 | `--dict-name` | `-n` | Dictionary name (auto-selects if only one) |
 | `--backup-dir` | `-b` | Copy originals here (mirroring folder structure) before modifying |
+| `--whole-words` | `-w` | Only match keys as whole words (not inside identifiers) |
 | `--dry-run` | | Preview changes without modifying files |
 
 ## Config Format
@@ -173,9 +177,19 @@ Check that:
 2. Files aren't being filtered by ignore rules
 3. The target folder contains text files
 
-### Replacements happening in wrong order
+### Overlapping or swapped replacements
 
-Replacements are applied in dictionary key order. If you have overlapping patterns (e.g., "hello" and "hello world"), the first match wins. Consider using more specific patterns.
+All replacements happen in a single pass, longest key first:
+
+- Overlapping keys (e.g., "hello" and "hello world"): the longest key wins wherever it matches.
+- Replaced text is never re-replaced, so `{"cat": "dog", "dog": "wolf"}` turns "cat" into "dog" (not "wolf").
+- Two names can be swapped safely: `{"foo": "bar", "bar": "foo"}` exchanges them in one run.
+
+When renaming identifiers, add `--whole-words` so a key like `cat` doesn't match inside `category` or `concat`.
+
+### Reverse direction with duplicate values
+
+Direction 2 inverts the dictionary (values become keys). If two keys map to the same value, only the last mapping survives the inversion — a warning is printed when this happens.
 
 ## Use Cases
 
