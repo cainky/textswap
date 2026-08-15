@@ -5,8 +5,10 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import re
 import shutil
 from pathlib import Path
+from typing import Callable
 
 import click
 
@@ -96,9 +98,50 @@ def get_replacement_dict(
     replacement_dict: dict[str, str] = dictionaries[dict_name]
 
     if direction == 2:
-        replacement_dict = {v: k for k, v in replacement_dict.items()}
+        inverted: dict[str, str] = {}
+        for key, value in replacement_dict.items():
+            if value in inverted:
+                click.echo(
+                    f"Warning: duplicate value '{value}' in dictionary; "
+                    f"direction 2 keeps only the last mapping ('{value}' -> '{key}')",
+                    err=True,
+                )
+            inverted[value] = key
+        replacement_dict = inverted
 
     return dict_name, replacement_dict
+
+
+def compile_replacer(replacement_dict: dict[str, str], whole_words: bool) -> Callable[[str], str]:
+    """Build a single-pass replacement function from a dictionary.
+
+    All keys are matched in one pass (longest key first), so replaced text is
+    never re-replaced by another key and dictionaries can swap two values.
+
+    Args:
+        replacement_dict: Dictionary of replacements to apply.
+        whole_words: If True, keys only match when not adjacent to word characters.
+
+    Returns:
+        Function mapping original content to replaced content.
+    """
+    keys = [k for k in replacement_dict if k]
+    if len(keys) != len(replacement_dict):
+        click.echo("Warning: ignoring empty string key in dictionary", err=True)
+    if not keys:
+        return lambda content: content
+
+    keys.sort(key=len, reverse=True)
+    if whole_words:
+        pattern = "|".join(rf"(?<!\w){re.escape(k)}(?!\w)" for k in keys)
+    else:
+        pattern = "|".join(re.escape(k) for k in keys)
+    regex = re.compile(pattern)
+
+    def replace(content: str) -> str:
+        return regex.sub(lambda m: replacement_dict[m.group(0)], content)
+
+    return replace
 
 
 def should_skip_file(
@@ -153,7 +196,7 @@ def generate_diff(file_path: Path, old_content: str, new_content: str) -> str:
 
 def process_file(
     file_path: Path,
-    replacement_dict: dict[str, str],
+    replacer: Callable[[str], str],
     dry_run: bool,
     backup_path: Path | None = None,
 ) -> tuple[bool, str | None]:
@@ -161,7 +204,7 @@ def process_file(
 
     Args:
         file_path: Path to the file to process.
-        replacement_dict: Dictionary of replacements to apply.
+        replacer: Function applying the replacements to file content.
         dry_run: If True, don't modify the file.
         backup_path: If set, copy the original file here before modifying it.
 
@@ -178,9 +221,7 @@ def process_file(
     except OSError as e:
         return False, f"Skipped (read error): {file_path} - {e}"
 
-    new_content = content
-    for key, value in replacement_dict.items():
-        new_content = new_content.replace(key, value)
+    new_content = replacer(content)
 
     if new_content != content:
         if dry_run:
@@ -242,6 +283,12 @@ def process_file(
     help="Directory to store backups before writing files",
 )
 @click.option(
+    "--whole-words",
+    "-w",
+    is_flag=True,
+    help="Only match keys as whole words (not inside identifiers)",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show what would be replaced without making changes",
@@ -251,6 +298,7 @@ def replace_text(
     direction: int,
     folder: str,
     dict_name: str | None,
+    whole_words: bool,
     dry_run: bool,
     backup_dir: str,
 ) -> None:
@@ -271,6 +319,7 @@ def replace_text(
     ignore_file_prefixes = cfg.ignore_file_prefixes
 
     dict_name, replacement_dict = get_replacement_dict(dictionaries, dict_name, direction)
+    replacer = compile_replacer(replacement_dict, whole_words)
 
     if dry_run:
         click.echo("Dry run mode - no files will be modified\n")
@@ -298,7 +347,7 @@ def replace_text(
                 continue
 
             backup_path = backup_root / file_path.relative_to(folder_path) if backup_root else None
-            modified, error = process_file(file_path, replacement_dict, dry_run, backup_path)
+            modified, error = process_file(file_path, replacer, dry_run, backup_path)
 
             if error:
                 files_skipped += 1

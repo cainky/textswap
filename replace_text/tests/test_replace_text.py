@@ -441,11 +441,10 @@ class TestEdgeCases(unittest.TestCase):
             os.remove(self.config_file)
 
     def test_overlapping_keys(self):
-        """Test behavior with overlapping replacement keys."""
+        """Overlapping keys resolve longest-match-first in a single pass."""
         with open(os.path.join(self.test_folder, "test.txt"), "w") as f:
             f.write("hello hello world")
 
-        # Note: replacements are applied in dict order
         config = {"dictionaries": {"test": {"hello": "hi", "hello world": "goodbye"}}}
         with open(self.config_file, "w") as f:
             json.dump(config, f)
@@ -465,10 +464,10 @@ class TestEdgeCases(unittest.TestCase):
         )
         self.assertEqual(result.exit_code, 0)
 
-        # Both 'hello' occurrences get replaced first, then 'hello world' can't match
+        # 'hello world' wins where it matches; the lone 'hello' still becomes 'hi'
         with open(os.path.join(self.test_folder, "test.txt")) as f:
             content = f.read()
-        self.assertEqual(content, "hi hi world")
+        self.assertEqual(content, "hi goodbye")
 
     def test_empty_replacement_value(self):
         """Test replacement with empty string (deletion)."""
@@ -725,6 +724,86 @@ class TestEdgeCases(unittest.TestCase):
 
         with open(os.path.join(self.test_folder, "test.txt")) as f:
             content = f.read()
+        self.assertEqual(content, "Hi")
+
+
+class TestReplacementSemantics(unittest.TestCase):
+    """Tests for single-pass replacement and whole-word matching."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+        self.test_folder = "test_folder_semantics"
+        self.config_file = "config_semantics.json"
+        os.makedirs(self.test_folder, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self.test_folder, ignore_errors=True)
+        if os.path.exists(self.config_file):
+            os.remove(self.config_file)
+
+    def run_swap(self, dictionary, content, *extra_args, direction="1"):
+        with open(os.path.join(self.test_folder, "test.txt"), "w") as f:
+            f.write(content)
+        with open(self.config_file, "w") as f:
+            json.dump({"dictionaries": {"test": dictionary}}, f)
+
+        result = self.runner.invoke(
+            replace_text,
+            [
+                "--config",
+                self.config_file,
+                "--direction",
+                direction,
+                "--folder",
+                self.test_folder,
+                "--dict-name",
+                "test",
+                *extra_args,
+            ],
+        )
+        with open(os.path.join(self.test_folder, "test.txt")) as f:
+            return result, f.read()
+
+    def test_swap_two_names(self):
+        """A dictionary can swap two names without corrupting either."""
+        result, content = self.run_swap({"foo": "bar", "bar": "foo"}, "foo bar")
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(content, "bar foo")
+
+    def test_replacements_do_not_cascade(self):
+        """A replaced value is never re-replaced by a later key."""
+        result, content = self.run_swap({"cat": "dog", "dog": "wolf"}, "cat dog")
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(content, "dog wolf")
+
+    def test_whole_words_flag(self):
+        """--whole-words only matches keys not touching word characters."""
+        result, content = self.run_swap(
+            {"cat": "dog"}, "cat category concat cat_x cat.", "--whole-words"
+        )
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(content, "dog category concat cat_x dog.")
+
+    def test_substring_match_without_whole_words(self):
+        """Default behavior still matches substrings."""
+        result, content = self.run_swap({"cat": "dog"}, "cat category concat")
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(content, "dog dogegory condog")
+
+    def test_direction_2_duplicate_values_warn(self):
+        """Direction 2 warns when inverting a dictionary with duplicate values."""
+        result, content = self.run_swap({"a": "same", "b": "same"}, "same same", direction="2")
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("duplicate value", result.output.lower())
+        self.assertEqual(content, "b b")
+
+    def test_empty_key_skipped_with_warning(self):
+        """Empty-string keys are ignored with a warning instead of exploding."""
+        result, content = self.run_swap({"": "x", "Hello": "Hi"}, "Hello")
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("empty", result.output.lower())
         self.assertEqual(content, "Hi")
 
 
