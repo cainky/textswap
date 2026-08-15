@@ -49,6 +49,9 @@ textswap --folder ./src --direction 1 --config my_config.json
 # Dry run (preview changes with diff output)
 textswap -f ./src -d 1 --dry-run
 
+# Back up originals before modifying
+textswap -f ./src -d 1 -b ./backups
+
 # Reverse direction (values-to-keys)
 textswap -f ./src -d 2
 ```
@@ -61,6 +64,7 @@ textswap -f ./src -d 2
 | `--direction` | `-d` | 1 = keys-to-values, 2 = values-to-keys |
 | `--config` | `-c` | Path to config file (default: config.json) |
 | `--dict-name` | `-n` | Dictionary name (auto-selects if only one) |
+| `--backup-dir` | `-b` | Copy originals here (mirroring folder structure) before modifying |
 | `--dry-run` | | Preview changes without modifying files |
 
 ## Config Format

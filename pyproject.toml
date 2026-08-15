@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "textswap"
-version = "0.2.1"
+version = "0.3.0"
 description = "Bulk text replacement in files using dictionary mappings"
 readme = "README.md"
 license = "GPL-3.0-or-later"
